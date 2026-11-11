@@ -58,6 +58,38 @@ public class PathUtilTests
         Assert.Equal(expected, PathUtil.GetNameInParent(location));
 
     [Fact]
+    public void UniqueName_counts_up_like_explorer()
+    {
+        Assert.Equal("New folder", PathUtil.UniqueName("New folder", _ => false));
+
+        var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "New folder", "new folder (2)" };
+        Assert.Equal("New folder (3)", PathUtil.UniqueName("New folder", taken.Contains));
+    }
+
+    [Theory]
+    [InlineData("readme.md", true)]
+    [InlineData(".gitignore", true)]
+    [InlineData("a b c", true)]
+    [InlineData("", false)]
+    [InlineData(".", false)]
+    [InlineData("..", false)]
+    [InlineData("a/b", false)]
+    [InlineData("a\\b", false)]
+    [InlineData("what?", false)]
+    [InlineData("x:y", false)]
+    public void IsValidFileName(string name, bool expected) =>
+        Assert.Equal(expected, PathUtil.IsValidFileName(name));
+
+    [Fact]
+    public void SameLocation_ignores_case_and_nulls_never_match()
+    {
+        Assert.True(PathUtil.SameLocation(@"C:\Repo", @"c:\repo"));
+        Assert.False(PathUtil.SameLocation(@"C:\Repo", @"C:\Repo2"));
+        Assert.False(PathUtil.SameLocation(null, @"C:\"));
+        Assert.True(PathUtil.SameLocation(PathUtil.ComputerRoot, PathUtil.ComputerRoot));
+    }
+
+    [Fact]
     public void Combine_handles_roots_and_drives()
     {
         Assert.Equal(@"C:\Windows", PathUtil.Combine(@"C:\", new FileEntry("Windows", EntryKind.Directory)));

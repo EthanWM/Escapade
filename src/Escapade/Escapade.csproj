@@ -16,4 +16,8 @@
     <InternalsVisibleTo Include="Escapade.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Vanara.Windows.Shell" Version="5.0.8" />
+  </ItemGroup>
+
 </Project>

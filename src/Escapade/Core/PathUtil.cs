@@ -91,4 +91,26 @@ public static class PathUtil
     /// <summary>Short name for titles and tabs.</summary>
     public static string ShortName(string location) =>
         IsComputerRoot(location) ? ComputerDisplayName : GetNameInParent(location);
+
+    public static bool SameLocation(string? a, string? b) =>
+        a is not null && b is not null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Explorer-style unique name: "New folder", then "New folder (2)", "New folder (3)"...</summary>
+    public static string UniqueName(string baseName, Func<string, bool> exists)
+    {
+        if (!exists(baseName))
+            return baseName;
+        for (int i = 2; ; i++)
+        {
+            var candidate = $"{baseName} ({i})";
+            if (!exists(candidate))
+                return candidate;
+        }
+    }
+
+    private static readonly char[] InvalidNameChars = Path.GetInvalidFileNameChars();
+
+    /// <summary>Whether <paramref name="name"/> can be a single file or folder name.</summary>
+    public static bool IsValidFileName(string name) =>
+        name.Length > 0 && name is not "." and not ".." && name.IndexOfAny(InvalidNameChars) < 0;
 }

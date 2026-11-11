@@ -40,7 +40,9 @@ internal static partial class NativeMethods
 
     internal const uint LVM_FIRST = 0x1000;
     internal const uint LVM_GETNEXTITEM = LVM_FIRST + 12;
+    internal const uint LVM_GETEDITCONTROL = LVM_FIRST + 24;
     internal const uint LVM_GETTOPINDEX = LVM_FIRST + 39;
+    internal const uint EM_SETSEL = 0x00B1;
     internal const uint LVM_SETITEMSTATE = LVM_FIRST + 43;
     internal const uint LVM_SETSELECTIONMARK = LVM_FIRST + 67;
 
