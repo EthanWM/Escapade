@@ -23,6 +23,20 @@ internal sealed class FileListView : ListView
         HeaderStyle = ColumnHeaderStyle.Clickable;
     }
 
+    /// <summary>
+    /// Whether the last context menu request came from the mouse. Keyboard requests (the Menu key,
+    /// Shift+F10) arrive with lParam -1, so Shift+right-click can mean something different from
+    /// Shift+F10.
+    /// </summary>
+    public bool ContextMenuFromMouse { get; private set; }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_CONTEXTMENU)
+            ContextMenuFromMouse = unchecked((int)(long)m.LParam) != -1;
+        base.WndProc(ref m);
+    }
+
     public int FocusedIndex =>
         IsHandleCreated ? (int)SendMessage(Handle, LVM_GETNEXTITEM, -1, LVNI_FOCUSED) : -1;
 

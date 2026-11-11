@@ -2,7 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using Escapade.Core;
 using static Escapade.Interop.NativeMethods;
-using Ops = Vanara.Windows.Shell.ShellFileOperations;
+using CMF = Vanara.PInvoke.Shell32.CMF;
 
 namespace Escapade.UI;
 
@@ -73,6 +73,12 @@ internal sealed class FilePane : UserControl
     private bool _renameArmed;
     private bool _editing;
     private bool _reloadAfterEdit;
+
+    private bool _pendingVisit;           // the current navigation counts as a visit once it lists cleanly
+    private bool _messageIsInfo;          // _error holds a notice ("Undid: ...") rather than an error
+    private Point _menuPoint;             // where the app's context menu last opened (screen)
+    private bool _menuOnBackground;       // ...and whether it was for empty space rather than items
+    private ShellContextMenuHost? _nativeMenu; // the Windows menu, while it's open
 
     public FilePane()
     {
@@ -209,6 +215,31 @@ internal sealed class FilePane : UserControl
     /// <summary>The user asked to copy or move this pane's selection to the other pane.</summary>
     public event Action<FilePane, TransferKind>? TransferRequested;
 
+    /// <summary>An undoable file operation finished (rename, delete to Recycle Bin, new folder).</summary>
+    public event Action<FileAction>? ActionRecorded;
+
+    /// <summary>
+    /// The user went to a folder and it listed without error: a visit for Ctrl+P's history.
+    /// Not raised for being bounced back from a folder that failed, or for the start-up folder.
+    /// </summary>
+    public event Action<string>? Visited;
+
+    /// <summary>The current shortcut for a command id ("F2"), or null if it has none. Set by the main window.</summary>
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Func<string, string?> Shortcut { get; set; } = _ => null;
+
+    /// <summary>Re-reads <see cref="Shortcut"/> for the tooltips, after the keymap changes.</summary>
+    public void RefreshShortcutHints()
+    {
+        _toolTip.SetToolTip(_backButton, WithKey("Back", CommandCatalog.Back));
+        _toolTip.SetToolTip(_forwardButton, WithKey("Forward", CommandCatalog.Forward));
+        _toolTip.SetToolTip(_upButton, Shortcut(CommandCatalog.Up) is { } up ? $"Up (Backspace, {up})" : "Up (Backspace)");
+        _toolTip.SetToolTip(_pathBox, Shortcut(CommandCatalog.EditPath) is { } edit ? $"{edit} to edit" : "Click to edit");
+
+        string WithKey(string text, string command) => Shortcut(command) is { } key ? $"{text} ({key})" : text;
+    }
+
     public string CurrentPath => _location;
 
     public bool IsEditingName => _editing;
@@ -238,7 +269,8 @@ internal sealed class FilePane : UserControl
     /// Navigates to user-supplied text. A file path navigates to its folder and selects the file.
     /// Returns false (and shows why) if the path is invalid or doesn't exist.
     /// </summary>
-    public bool Navigate(string input)
+    /// <param name="countVisit">Whether this counts as a visit for <see cref="Visited"/>; false for the start-up folders.</param>
+    public bool Navigate(string input, bool countVisit = true)
     {
         var path = PathUtil.Normalize(input, PathUtil.IsComputerRoot(_location) ? null : _location);
         if (path is null)
@@ -274,7 +306,7 @@ internal sealed class FilePane : UserControl
 
         RememberSelection();
         _history.Push(path);
-        LoadLocation(path, select);
+        LoadLocation(path, select, countVisit);
         return true;
     }
 
@@ -282,14 +314,14 @@ internal sealed class FilePane : UserControl
     {
         RememberSelection();
         if (_history.GoBack() is { } entry)
-            LoadLocation(entry.Location, entry.SelectedName);
+            LoadLocation(entry.Location, entry.SelectedName, countVisit: true);
     }
 
     public void GoForward()
     {
         RememberSelection();
         if (_history.GoForward() is { } entry)
-            LoadLocation(entry.Location, entry.SelectedName);
+            LoadLocation(entry.Location, entry.SelectedName, countVisit: true);
     }
 
     public void GoUp()
@@ -299,7 +331,7 @@ internal sealed class FilePane : UserControl
         RememberSelection();
         var cameFrom = PathUtil.GetNameInParent(_location);
         _history.Push(parent);
-        LoadLocation(parent, cameFrom);
+        LoadLocation(parent, cameFrom, countVisit: true);
     }
 
     public void FocusList() => _list.Focus();
@@ -336,7 +368,7 @@ internal sealed class FilePane : UserControl
         RememberSelection();
         var path = PathUtil.Combine(_location, entry);
         _history.Push(path);
-        LoadLocation(path, null);
+        LoadLocation(path, null, countVisit: true);
     }
 
     private void RememberSelection()
@@ -350,11 +382,13 @@ internal sealed class FilePane : UserControl
     // ------------------------------------------------------------------
 
     /// <summary>Navigation load: clears the list and streams the new folder in as it's enumerated.</summary>
-    private void LoadLocation(string location, string? selectName)
+    /// <param name="countVisit">Raise <see cref="Visited"/> once it has listed without error.</param>
+    private void LoadLocation(string location, string? selectName, bool countVisit = false)
     {
         StopWatcher();
         bool changed = !PathUtil.SameLocation(_location, location);
         _location = location;
+        _pendingVisit = countVisit && !PathUtil.IsComputerRoot(location);
         _all = [];
         _filter = "";
         _error = null;
@@ -450,6 +484,7 @@ internal sealed class FilePane : UserControl
 
         if (error is not null)
         {
+            _pendingVisit = false; // a folder that couldn't be listed (fully) isn't somewhere to come back to
             var message = DescribeLoadError(error, _location);
             if (_all.Count == 0 && _history.RevertFailed() is { } previous)
             {
@@ -463,9 +498,18 @@ internal sealed class FilePane : UserControl
         else if (completed)
         {
             StartWatcher();
+            RaiseVisit();
         }
 
         RebuildView(preserveScroll: true);
+    }
+
+    private void RaiseVisit()
+    {
+        if (!_pendingVisit)
+            return;
+        _pendingVisit = false;
+        Visited?.Invoke(_location);
     }
 
     private void OnReloadBatch(List<FileEntry> batch, bool completed, Exception? error)
@@ -482,6 +526,11 @@ internal sealed class FilePane : UserControl
         var selection = _reloadSelection;
         var after = _afterReload;
         CancelReload();
+
+        if (error is null)
+            RaiseVisit(); // this reload superseded a navigation load before it finished
+        else
+            _pendingVisit = false;
 
         if (error is not null && buffer.Count == 0)
         {
@@ -766,7 +815,7 @@ internal sealed class FilePane : UserControl
         RebuildView(preserveScroll: false);
     }
 
-    private void ToggleHidden()
+    public void ToggleHidden()
     {
         _showHidden = !_showHidden;
         RebuildView(preserveScroll: false);
@@ -828,6 +877,8 @@ internal sealed class FilePane : UserControl
 
     private void OnListKeyDown(object? sender, KeyEventArgs e)
     {
+        // Only the fixed keys that belong to the list itself. Everything rebindable (F2, F5, Del...)
+        // is a command, dispatched by the main window from the keymap before it gets here.
         switch (e.KeyData)
         {
             case Keys.Enter:
@@ -850,39 +901,6 @@ internal sealed class FilePane : UserControl
                 if (_filter.Length == 0)
                     return;
                 SetFilter("");
-                break;
-
-            case Keys.Control | Keys.A:
-                _autoSelect = false;
-                _list.SelectAllItems();
-                break;
-
-            case Keys.F2:
-                BeginRename();
-                break;
-
-            case Keys.F5:
-                TransferRequested?.Invoke(this, TransferKind.Copy);
-                break;
-
-            case Keys.F6:
-                TransferRequested?.Invoke(this, TransferKind.Move);
-                break;
-
-            case Keys.Delete:
-                DeleteSelection(permanent: false);
-                break;
-
-            case Keys.Shift | Keys.Delete:
-                DeleteSelection(permanent: true);
-                break;
-
-            case Keys.Control | Keys.Shift | Keys.N:
-                CreateFolder();
-                break;
-
-            case Keys.Control | Keys.Shift | Keys.E:
-                RevealInExplorer();
                 break;
 
             default:
@@ -955,41 +973,6 @@ internal sealed class FilePane : UserControl
         e.SuppressKeyPress = true; // no ding
     }
 
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        // While renaming, keys belong to the edit box (Ctrl+Left moves by word, and so on).
-        if (_editing)
-            return base.ProcessCmdKey(ref msg, keyData);
-
-        switch (keyData)
-        {
-            case Keys.Alt | Keys.Left:
-            case Keys.BrowserBack:
-                GoBack();
-                return true;
-            case Keys.Alt | Keys.Right:
-            case Keys.BrowserForward:
-                GoForward();
-                return true;
-            case Keys.Alt | Keys.Up:
-                GoUp();
-                return true;
-            case Keys.Control | Keys.L:
-            case Keys.Alt | Keys.D:
-            case Keys.F4:
-                FocusPathBar();
-                return true;
-            case Keys.Control | Keys.R:
-            case Keys.BrowserRefresh:
-                Reload();
-                return true;
-            case Keys.Control | Keys.H:
-                ToggleHidden();
-                return true;
-        }
-        return base.ProcessCmdKey(ref msg, keyData);
-    }
-
     // ------------------------------------------------------------------
     // Context menu
     // ------------------------------------------------------------------
@@ -997,19 +980,50 @@ internal sealed class FilePane : UserControl
     private ContextMenuStrip BuildContextMenu()
     {
         var menu = new ContextMenuStrip();
-        var open = Add("Open", "Enter", OpenSelection);
+        var commandItems = new List<(ToolStripMenuItem Item, string Command)>();
+        var open = Add("Open", null, OpenSelection);
+        open.ShortcutKeyDisplayString = "Enter";
         menu.Items.Add(new ToolStripSeparator());
-        var copy = Add("Copy to other pane", "F5", () => TransferRequested?.Invoke(this, TransferKind.Copy));
-        var move = Add("Move to other pane", "F6", () => TransferRequested?.Invoke(this, TransferKind.Move));
+        var copy = Add("Copy to other pane", CommandCatalog.CopyToOther, () => RequestTransfer(TransferKind.Copy));
+        var move = Add("Move to other pane", CommandCatalog.MoveToOther, () => RequestTransfer(TransferKind.Move));
         menu.Items.Add(new ToolStripSeparator());
-        var rename = Add("Rename", "F2", BeginRename);
-        var delete = Add("Delete", "Del", () => DeleteSelection(permanent: false));
+        var rename = Add("Rename", CommandCatalog.Rename, BeginRename);
+        var delete = Add("Delete", CommandCatalog.Delete, () => DeleteSelection(permanent: false));
         menu.Items.Add(new ToolStripSeparator());
-        var newFolder = Add("New folder", "Ctrl+Shift+N", CreateFolder);
-        Add("Reveal in Explorer", "Ctrl+Shift+E", RevealInExplorer);
-
-        menu.Opening += (_, _) =>
+        var newFolder = Add("New folder", CommandCatalog.NewFolder, CreateFolder);
+        Add("Reveal in Explorer", CommandCatalog.Reveal, RevealInExplorer);
+        menu.Items.Add(new ToolStripSeparator());
+        var more = Add("Show more options", null, () =>
         {
+            // Runs as the strip closes; show the Windows menu once it's gone, where the strip was.
+            var point = _menuPoint;
+            bool background = _menuOnBackground;
+            BeginInvoke(() => ShowNativeMenu(point, background, extended: (ModifierKeys & Keys.Shift) != 0));
+        });
+        more.ShortcutKeyDisplayString = "Shift+Right-click";
+
+        menu.Opened += (_, _) => _menuPoint = menu.Bounds.Location;
+        menu.Opening += (_, e) =>
+        {
+            // Shortcuts come from the keymap, which the user can change at any time.
+            foreach (var (item, command) in commandItems)
+                item.ShortcutKeyDisplayString = Shortcut(command) ?? "";
+
+            bool fromMouse = _list.ContextMenuFromMouse;
+            _menuOnBackground = fromMouse && _list.HitTest(_list.PointToClient(Cursor.Position)).Item is null;
+
+            // Shift+right-click goes straight to the Windows menu, with its extended verbs ("Copy as
+            // path", "Open PowerShell window here"), as Shift does in Explorer. Shift+F10 is the
+            // keyboard's plain context-menu key, so it still opens this menu.
+            if (fromMouse && (ModifierKeys & Keys.Shift) != 0)
+            {
+                e.Cancel = true;
+                var point = Cursor.Position;
+                bool background = _menuOnBackground;
+                BeginInvoke(() => ShowNativeMenu(point, background, extended: true));
+                return;
+            }
+
             bool inFolder = !PathUtil.IsComputerRoot(_location);
             int targets = CommandTargets().Count;
             open.Enabled = FocusedEntry() is not null;
@@ -1019,13 +1033,102 @@ internal sealed class FilePane : UserControl
         };
         return menu;
 
-        ToolStripMenuItem Add(string text, string keys, Action action)
+        ToolStripMenuItem Add(string text, string? command, Action action)
         {
-            var item = new ToolStripMenuItem(text) { ShortcutKeyDisplayString = keys };
+            var item = new ToolStripMenuItem(text);
             item.Click += (_, _) => action();
             menu.Items.Add(item);
+            if (command is not null)
+                commandItems.Add((item, command));
             return item;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // The Windows (shell) context menu
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Shows Explorer's own context menu for the selection, or for the folder itself when
+    /// <paramref name="background"/> is set or nothing is selected.
+    /// </summary>
+    private void ShowNativeMenu(Point screen, bool background, bool extended)
+    {
+        if (IsDisposed || _editing || _nativeMenu is not null)
+            return;
+
+        var paths = background ? [] : NativeMenuTargets();
+        var directory = PathUtil.IsComputerRoot(_location) ? null : _location;
+        var flags = CMF.CMF_NORMAL;
+        if (paths.Count > 0)
+            flags |= CMF.CMF_ITEMMENU | CMF.CMF_CANRENAME; // "Rename" is offered; we do it in place
+        if (extended)
+            flags |= CMF.CMF_EXTENDEDVERBS;
+
+        try
+        {
+            using var host = paths.Count > 0
+                ? ShellContextMenuHost.ForPaths(paths, Handle)
+                : ShellContextMenuHost.ForBackground(_location, Handle);
+            _nativeMenu = host;
+            try
+            {
+                var hr = host.ShowAndInvoke(Handle, screen, flags, directory, verb => HandleNativeVerb(verb, paths));
+                if (hr.Failed && hr != unchecked((int)0x800704C7)) // ERROR_CANCELLED: the user backed out
+                    ShowError($"That command failed ({hr}).");
+            }
+            finally
+            {
+                _nativeMenu = null;
+            }
+        }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException
+                                   or ArgumentException or FileNotFoundException or UnauthorizedAccessException)
+        {
+            ShowError($"Couldn't show the Windows menu: {ex.Message}");
+        }
+    }
+
+    /// <summary>Paths for the Windows menu: like <see cref="CommandTargets"/>, but drives count too.</summary>
+    private List<string> NativeMenuTargets()
+    {
+        var targets = SelectedEntries();
+        if (targets.Count == 0 && FocusedEntry() is { } focused)
+            targets.Add(focused);
+        return targets.Select(e => PathUtil.Combine(_location, e)).ToList();
+    }
+
+    /// <summary>
+    /// Some shell commands are better done by Escapade: rename needs an Explorer view to call back
+    /// into (from here it would do nothing), delete should land on Escapade's undo history, and
+    /// opening a folder should browse into it rather than open an Explorer window.
+    /// </summary>
+    private bool HandleNativeVerb(string? verb, List<string> paths)
+    {
+        bool inFolder = !PathUtil.IsComputerRoot(_location);
+        switch (verb?.ToLowerInvariant())
+        {
+            case "rename" when inFolder:
+                BeginInvoke(BeginRename);
+                return true;
+            case "delete" when inFolder:
+                bool permanent = (ModifierKeys & Keys.Shift) != 0;
+                BeginInvoke(() => DeleteSelection(permanent));
+                return true;
+            case "open" or "explore" when paths.Count == 1 && Directory.Exists(paths[0]):
+                var target = paths[0];
+                BeginInvoke(() => Navigate(target));
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (_nativeMenu?.HandleMenuMessage(ref m) == true)
+            return;
+        base.WndProc(ref m);
     }
 
     // ------------------------------------------------------------------
@@ -1035,6 +1138,28 @@ internal sealed class FilePane : UserControl
     /// <summary>Full paths of what a command should act on: the selection, or the focused item.</summary>
     public List<string> GetCommandPaths() =>
         CommandTargets().Select(e => PathUtil.Combine(_location, e)).ToList();
+
+    /// <summary>F5 / F6: hands the selection to the main window, which knows the other pane.</summary>
+    public void RequestTransfer(TransferKind kind) => TransferRequested?.Invoke(this, kind);
+
+    public void SelectAll()
+    {
+        _autoSelect = false;
+        _list.SelectAllItems();
+    }
+
+    /// <summary>The Windows menu from the keyboard: for the selection, shown under the focused row.</summary>
+    public void ShowWindowsMenu()
+    {
+        bool background = NativeMenuTargets().Count == 0;
+        var point = new Point(0, 0);
+        if (!background && _list.FocusedIndex is var index and >= 0 && index < _view.Count)
+        {
+            var row = _list.GetItemRect(index, ItemBoundsPortion.Label);
+            point = new Point(row.Left, row.Bottom);
+        }
+        ShowNativeMenu(_list.PointToScreen(point), background, extended: false);
+    }
 
     private List<FileEntry> CommandTargets()
     {
@@ -1148,35 +1273,42 @@ internal sealed class FilePane : UserControl
         }
 
         var folder = _location;
-        var path = PathUtil.Combine(folder, entry);
+        var action = FileAction.Rename(PathUtil.Combine(folder, entry), newName);
         ClearError();
-        var result = await FileOperationRunner.RunAsync(OwnerHandle(), FileOperationRunner.Undoable,
-            b => b.Operations.QueueRenameOperation(b.Item(path), newName));
+        var outcome = await FileActionRunner.DoAsync(action, OwnerHandle());
         if (IsDisposed)
             return;
-        ReportResult(result, "Rename");
-        NotifyChanged(folder, [CreatedNameIn(result, folder) ?? newName]);
+        Finish(action, outcome, "Rename");
+        var renamed = NamesIn(outcome.Select, folder);
+        NotifyChanged(folder, renamed.Count > 0 ? renamed : [newName]);
     }
 
-    private async void DeleteSelection(bool permanent)
+    public async void DeleteSelection(bool permanent)
     {
         var paths = GetCommandPaths();
         if (paths.Count == 0)
             return;
 
-        // Permanent delete passes no flags at all: on a delete, FOF_ALLOWUNDO itself means "recycle".
-        // With no flags the shell asks for confirmation itself.
-        var flags = permanent
-            ? 0
-            : FileOperationRunner.Undoable | Ops.OperationFlags.RecycleOnDelete | Ops.OperationFlags.WantNukeWarning;
-
         var folder = _location;
         ClearError();
-        var result = await FileOperationRunner.RunAsync(OwnerHandle(), flags,
-            b => b.Operations.QueueDeleteOperation(paths.Select(b.Item).ToList()));
+        if (permanent)
+        {
+            // Not undoable, so not recorded. No flags at all: on a delete, FOF_ALLOWUNDO itself means
+            // "recycle". With no flags the shell asks for confirmation itself.
+            var result = await FileOperationRunner.RunAsync(OwnerHandle(), 0,
+                b => b.Operations.QueueDeleteOperation(paths.Select(b.Item).ToList()));
+            if (IsDisposed)
+                return;
+            ReportResult(result, "Delete");
+            NotifyChanged(folder);
+            return;
+        }
+
+        var action = FileAction.Recycle(paths);
+        var outcome = await FileActionRunner.DoAsync(action, OwnerHandle());
         if (IsDisposed)
             return;
-        ReportResult(result, "Delete");
+        Finish(action, outcome, "Delete");
         NotifyChanged(folder);
     }
 
@@ -1186,17 +1318,15 @@ internal sealed class FilePane : UserControl
             return;
 
         var folder = _location;
-        var name = PathUtil.UniqueName("New folder", n => Path.Exists(Path.Join(folder, n)));
+        var action = FileAction.NewFolder(folder, "New folder");
         ClearError();
-        var result = await FileOperationRunner.RunAsync(OwnerHandle(), FileOperationRunner.Undoable,
-            b => b.Operations.QueueNewItemOperation(b.Folder(folder), name, FileAttributes.Directory, null!));
+        var outcome = await FileActionRunner.DoAsync(action, OwnerHandle());
         if (IsDisposed)
             return;
-        ReportResult(result, "New folder");
-        if (result.Error is not null || result.Aborted)
+        Finish(action, outcome, "New folder");
+        if (outcome.Failed || NamesIn(outcome.Select, folder) is not [.., var created])
             return;
 
-        var created = CreatedNameIn(result, folder) ?? name;
         NotifyChanged(folder, [created], after: () =>
         {
             // Straight into naming it, as in Explorer. Only if the user is still looking at it.
@@ -1230,12 +1360,21 @@ internal sealed class FilePane : UserControl
 
     private nint OwnerHandle() => (FindForm() ?? (Control)this).Handle;
 
-    /// <summary>Name of the last item the operation reported creating directly inside <paramref name="folder"/>.</summary>
-    private static string? CreatedNameIn(FileOpResult result, string folder) =>
-        result.CreatedPaths
-            .Where(p => PathUtil.SameLocation(Path.GetDirectoryName(p), folder))
-            .Select(Path.GetFileName)
-            .LastOrDefault(n => !string.IsNullOrEmpty(n));
+    /// <summary>Names of those <paramref name="paths"/> that sit directly inside <paramref name="folder"/>.</summary>
+    public static List<string> NamesIn(IEnumerable<string> paths, string folder) =>
+        paths.Where(p => PathUtil.SameLocation(Path.GetDirectoryName(p), folder))
+            .Select(p => Path.GetFileName(p))
+            .Where(n => n.Length > 0)
+            .ToList();
+
+    /// <summary>Reports a finished operation and, if it changed anything, offers it for undo.</summary>
+    public void Finish(FileAction action, ActionOutcome outcome, string operation)
+    {
+        if (outcome.Error is not null)
+            ShowError($"{operation} failed: {outcome.Error}");
+        if (outcome.DidSomething)
+            ActionRecorded?.Invoke(action);
+    }
 
     public void ReportResult(FileOpResult result, string operation)
     {
@@ -1268,6 +1407,15 @@ internal sealed class FilePane : UserControl
     public void ShowError(string message)
     {
         _error = message;
+        _messageIsInfo = false;
+        UpdateStatus();
+    }
+
+    /// <summary>A notice in the status bar ("Undid: ..."), in normal text rather than error red.</summary>
+    public void ShowInfo(string message)
+    {
+        _error = message;
+        _messageIsInfo = true;
         UpdateStatus();
     }
 
@@ -1299,7 +1447,7 @@ internal sealed class FilePane : UserControl
 
         if (_error is not null)
         {
-            _statusLabel.ForeColor = ErrorColor;
+            _statusLabel.ForeColor = _messageIsInfo ? SystemColors.ControlText : ErrorColor;
             _statusLabel.Text = _error;
             return;
         }
