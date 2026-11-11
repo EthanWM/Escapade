@@ -186,6 +186,69 @@ internal sealed class UserData : IDisposable
     }
 
     // ------------------------------------------------------------------
+    // Session: workspaces, tabs, window
+    // ------------------------------------------------------------------
+
+    private const string SessionName = "session.json";
+    private bool _sessionReadOnly; // couldn't read it, so don't overwrite it either
+
+    /// <summary>
+    /// The saved session, or null for a first run. A file that can't be used is set aside as
+    /// session.json.bad (it holds every workspace, so it's never silently overwritten) and the
+    /// problem returned for the status bar.
+    /// </summary>
+    public (Session? Session, string? Problem) LoadSession()
+    {
+        var path = PathOf(SessionName);
+        string? text;
+        try
+        {
+            text = SettingsFile.ReadText(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _sessionReadOnly = true;
+            return (null, $"Couldn't read {SessionName}, so workspaces won't be saved this time: {ex.Message}");
+        }
+        if (text is null)
+            return (null, null);
+
+        try
+        {
+            if (SessionFile.FromDto(SettingsFile.Deserialize<SessionDto>(text)) is { } session)
+                return (session, null);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+        }
+
+        try
+        {
+            File.Move(path, path + ".bad", overwrite: true);
+            return (null, $"{SessionName} couldn't be read, so Escapade started afresh. The old file is saved as {SessionName}.bad.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _sessionReadOnly = true;
+            return (null, $"{SessionName} couldn't be read or set aside, so workspaces won't be saved this time.");
+        }
+    }
+
+    public void SaveSession(Session session)
+    {
+        if (_sessionReadOnly)
+            return;
+        try
+        {
+            SettingsFile.WriteAtomic(PathOf(SessionName), SettingsFile.Serialize(SessionFile.ToDto(session)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Saved again on the next change and on exit.
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Folder history
     // ------------------------------------------------------------------
 

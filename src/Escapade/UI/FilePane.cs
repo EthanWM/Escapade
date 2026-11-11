@@ -38,9 +38,13 @@ internal sealed class FilePane : UserControl
     private readonly ContextMenuStrip _menu;
     private readonly ToolTip _toolTip = new();
     private readonly IconCache _icons;
-    private readonly NavigationHistory _history = new();
+    private readonly TabStrip _tabStrip;
+    private readonly ContextMenuStrip _tabMenu;
     private readonly System.Windows.Forms.Timer _watchTimer;
 
+    private PaneTabs _tabs = new(PathUtil.ComputerRoot);
+    private TabState? _restoring;           // the tab whose saved selection and scroll apply once it has listed
+    private NavigationHistory _history => _tabs.Active.History;
     private string _location = PathUtil.ComputerRoot;
     private List<FileEntry> _all = [];   // everything loaded so far, sorted; never mutated in place
     private List<FileEntry> _view = [];  // _all after filtering; may be the same instance
@@ -87,6 +91,21 @@ internal sealed class FilePane : UserControl
         _icons = new IconCache(SystemInformation.SmallIconSize);
 
         _activeStrip = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+
+        _tabStrip = new TabStrip { Dock = DockStyle.Fill, Margin = Padding.Empty };
+        _tabStrip.TabClicked += index =>
+        {
+            SelectTab(index);
+            FocusList(); // the strip never takes focus, so make this the active pane explicitly
+        };
+        _tabStrip.CloseClicked += index => CloseTab(index);
+        _tabStrip.NewTabClicked += () =>
+        {
+            NewTab();
+            FocusList();
+        };
+        _tabMenu = new ContextMenuStrip();
+        _tabStrip.MenuRequested += ShowTabMenu;
 
         _backButton = MakeNavButton("←", "Back (Alt+Left)", (_, _) => GoBack());
         _forwardButton = MakeNavButton("→", "Forward (Alt+Right)", (_, _) => GoForward());
@@ -184,17 +203,19 @@ internal sealed class FilePane : UserControl
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Margin = Padding.Empty,
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 3));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         layout.Controls.Add(_activeStrip, 0, 0);
-        layout.Controls.Add(pathBar, 0, 1);
-        layout.Controls.Add(_list, 0, 2);
-        layout.Controls.Add(statusBar, 0, 3);
+        layout.Controls.Add(_tabStrip, 0, 1);
+        layout.Controls.Add(pathBar, 0, 2);
+        layout.Controls.Add(_list, 0, 3);
+        layout.Controls.Add(statusBar, 0, 4);
 
         _watchTimer = new System.Windows.Forms.Timer();
         _watchTimer.Tick += (_, _) =>
@@ -204,6 +225,7 @@ internal sealed class FilePane : UserControl
         };
 
         Controls.Add(layout);
+        UpdateTabStrip();
         UpdateColumnHeaders();
         UpdateNavButtons();
         UpdateActiveStrip();
@@ -211,6 +233,12 @@ internal sealed class FilePane : UserControl
     }
 
     public event EventHandler? CurrentPathChanged;
+
+    /// <summary>Tabs were added, closed, moved or switched, or the active tab went somewhere: worth saving.</summary>
+    public event Action<FilePane>? TabsChanged;
+
+    /// <summary>The user asked to move a tab to the other pane (it has already been taken out of this one).</summary>
+    public event Action<FilePane, TabState>? TabMoveRequested;
 
     /// <summary>The user asked to copy or move this pane's selection to the other pane.</summary>
     public event Action<FilePane, TransferKind>? TransferRequested;
@@ -246,6 +274,13 @@ internal sealed class FilePane : UserControl
 
     public bool IsListFocused => _list.Focused;
 
+    public PaneTabs Tabs => _tabs;
+
+    /// <summary>What's listed so far in the current folder (all of it once <see cref="IsLoading"/> is false).</summary>
+    public IReadOnlyList<FileEntry> Entries => _all;
+
+    public bool IsLoading => _loading;
+
     /// <summary>Whether this is the pane commands act on. Shown as an accent strip along the top.</summary>
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -257,6 +292,7 @@ internal sealed class FilePane : UserControl
             if (_isActive == value)
                 return;
             _isActive = value;
+            _tabStrip.PaneActive = value;
             UpdateActiveStrip();
         }
     }
@@ -272,27 +308,8 @@ internal sealed class FilePane : UserControl
     /// <param name="countVisit">Whether this counts as a visit for <see cref="Visited"/>; false for the start-up folders.</param>
     public bool Navigate(string input, bool countVisit = true)
     {
-        var path = PathUtil.Normalize(input, PathUtil.IsComputerRoot(_location) ? null : _location);
-        if (path is null)
-        {
-            ShowError($"Not a valid path: {input}");
+        if (!Resolve(input, out var path, out var select))
             return false;
-        }
-
-        string? select = null;
-        if (!PathUtil.IsComputerRoot(path))
-        {
-            if (File.Exists(path))
-            {
-                select = Path.GetFileName(path);
-                path = Path.GetDirectoryName(path)!;
-            }
-            else if (!Directory.Exists(path))
-            {
-                ShowError($"Folder not found: {path}");
-                return false;
-            }
-        }
 
         if (_history.Current is { } current && PathUtil.SameLocation(current.Location, path))
         {
@@ -308,6 +325,43 @@ internal sealed class FilePane : UserControl
         _history.Push(path);
         LoadLocation(path, select, countVisit);
         return true;
+    }
+
+    /// <summary>Like <see cref="Navigate"/>, but in a new tab after the current one.</summary>
+    public bool NavigateInNewTab(string input)
+    {
+        if (!Resolve(input, out var path, out var select))
+            return false;
+        EndRename();
+        CaptureActiveTab();
+        _tabs.Add(path);
+        LoadLocation(path, select, countVisit: true);
+        return true;
+    }
+
+    /// <summary>User text to a folder (and a file in it to select). Shows why and returns false if it isn't one.</summary>
+    private bool Resolve(string input, out string path, out string? select)
+    {
+        select = null;
+        path = PathUtil.ComputerRoot;
+        if (PathUtil.Normalize(input, PathUtil.IsComputerRoot(_location) ? null : _location) is not { } normalized)
+        {
+            ShowError($"Not a valid path: {input}");
+            return false;
+        }
+        path = normalized;
+        if (PathUtil.IsComputerRoot(path))
+            return true;
+        if (File.Exists(path))
+        {
+            select = Path.GetFileName(path);
+            path = Path.GetDirectoryName(path)!;
+            return true;
+        }
+        if (Directory.Exists(path))
+            return true;
+        ShowError($"Folder not found: {path}");
+        return false;
     }
 
     public void GoBack()
@@ -378,34 +432,252 @@ internal sealed class FilePane : UserControl
     }
 
     // ------------------------------------------------------------------
+    // Tabs. Only the active tab is live; the rest are saved state (folder, history, selection,
+    // scroll) that's loaded back when switched to. Switching isn't navigating: no history entry,
+    // no visit, and no disk check on the UI thread; the background loader reports a missing folder.
+    // ------------------------------------------------------------------
+
+    /// <summary>Shows a different set of tabs (another workspace, or the restored session).</summary>
+    public void LoadTabs(PaneTabs tabs)
+    {
+        EndRename();
+        _tabs = tabs;
+        ShowActiveTab(countVisit: false);
+    }
+
+    /// <summary>
+    /// Saves the active tab's selection and scroll position into it, before switching away from it
+    /// or saving the session. Skipped while its saved state is still waiting to be applied.
+    /// </summary>
+    public void CaptureActiveTab()
+    {
+        var tab = _tabs.Active;
+        if (_restoring == tab || !_list.IsHandleCreated || !PathUtil.SameLocation(tab.Location, _location))
+            return;
+        RememberSelection();
+        var snapshot = CaptureSelection();
+        tab.SelectedAll = snapshot.All;
+        tab.Selected = snapshot.All ? [] : snapshot.Names.ToList();
+        tab.Focus = snapshot.Focus;
+        tab.Top = snapshot.Top;
+    }
+
+    private void ShowActiveTab(bool countVisit)
+    {
+        var tab = _tabs.Active;
+        LoadLocation(tab.Location, tab.History.Current?.SelectedName, countVisit, restore: tab);
+    }
+
+    public void SelectTab(int index)
+    {
+        if ((uint)index >= (uint)_tabs.Count || index == _tabs.ActiveIndex)
+            return;
+        EndRename();
+        CaptureActiveTab();
+        _tabs.ActiveIndex = index;
+        ShowActiveTab(countVisit: false);
+    }
+
+    public void CycleTab(int delta)
+    {
+        int count = _tabs.Count;
+        if (count > 1)
+            SelectTab(((_tabs.ActiveIndex + delta) % count + count) % count);
+    }
+
+    /// <summary>Opens a tab after the current one: at <paramref name="location"/>, or a copy of the current folder.</summary>
+    public void NewTab(string? location = null)
+    {
+        EndRename();
+        CaptureActiveTab();
+        _tabs.Add(location ?? _location);
+        ShowActiveTab(countVisit: location is not null);
+    }
+
+    /// <summary>Ctrl+Enter or middle-click: the focused folder in a new tab.</summary>
+    public void OpenFocusedInNewTab()
+    {
+        if (FocusedEntry() is { IsContainer: true } entry)
+            NewTab(PathUtil.Combine(_location, entry));
+    }
+
+    public void CloseTab(int? index = null)
+    {
+        int i = index ?? _tabs.ActiveIndex;
+        if (_tabs.Count <= 1)
+        {
+            ShowInfo("That's the only tab in this pane.");
+            return;
+        }
+        bool active = i == _tabs.ActiveIndex;
+        if (active)
+        {
+            EndRename();
+            CaptureActiveTab(); // so reopening it brings back the selection too
+        }
+        _tabs.Close(i);
+        if (active)
+        {
+            ShowActiveTab(countVisit: false);
+        }
+        else
+        {
+            UpdateTabStrip();
+            TabsChanged?.Invoke(this);
+        }
+    }
+
+    private void CloseOtherTabs(int keepIndex)
+    {
+        var keep = _tabs.Tabs[keepIndex];
+        EndRename();
+        CaptureActiveTab();
+        bool wasActive = _tabs.Active == keep;
+        for (int i = _tabs.Count - 1; i >= 0; i--)
+        {
+            if (_tabs.Tabs[i] != keep)
+                _tabs.Close(i);
+        }
+        _tabs.ActiveIndex = _tabs.IndexOf(keep);
+        if (wasActive)
+        {
+            UpdateTabStrip();
+            TabsChanged?.Invoke(this);
+        }
+        else
+        {
+            ShowActiveTab(countVisit: false);
+        }
+    }
+
+    public void ReopenClosedTab()
+    {
+        if (!_tabs.HasClosed)
+        {
+            ShowInfo("There are no closed tabs to reopen.");
+            return;
+        }
+        EndRename();
+        CaptureActiveTab();
+        _tabs.ReopenClosed();
+        ShowActiveTab(countVisit: false);
+    }
+
+    /// <summary>Takes the active tab out and hands it to the main window for the other pane.</summary>
+    public void MoveActiveTabToOther()
+    {
+        if (_tabs.Count <= 1)
+        {
+            ShowInfo("That's the only tab in this pane, so it stays.");
+            return;
+        }
+        EndRename();
+        CaptureActiveTab();
+        var tab = _tabs.Remove(_tabs.ActiveIndex)!;
+        ShowActiveTab(countVisit: false);
+        TabMoveRequested?.Invoke(this, tab);
+    }
+
+    /// <summary>Adds an existing tab (moved from the other pane) and shows it.</summary>
+    public void AddTab(TabState tab)
+    {
+        EndRename();
+        CaptureActiveTab();
+        _tabs.Add(tab);
+        ShowActiveTab(countVisit: false);
+    }
+
+    /// <summary>Cancels an open rename: the view is about to be swapped out from under it.</summary>
+    private void EndRename()
+    {
+        if (_editing && _list.IsHandleCreated)
+            SendMessage(_list.Handle, LVM_CANCELEDITLABEL, 0, 0);
+    }
+
+    private void UpdateTabStrip() =>
+        _tabStrip.SetTabs(
+            _tabs.Tabs.Select(t => (PathUtil.ShortName(t.Location), PathUtil.ToDisplay(t.Location))).ToList(),
+            _tabs.ActiveIndex);
+
+    private void ShowTabMenu(int index, Point location)
+    {
+        foreach (ToolStripItem old in _tabMenu.Items.Cast<ToolStripItem>().ToList())
+            old.Dispose();
+        _tabMenu.Items.Clear();
+
+        if (index >= 0)
+        {
+            Add("Close tab", CommandCatalog.CloseTab, () => CloseTab(index)).Enabled = _tabs.Count > 1;
+            Add("Close other tabs", null, () => CloseOtherTabs(index)).Enabled = _tabs.Count > 1;
+            Add("Move to the other pane", CommandCatalog.MoveTabToOther, () =>
+            {
+                SelectTab(index);
+                MoveActiveTabToOther();
+            }).Enabled = _tabs.Count > 1;
+            _tabMenu.Items.Add(new ToolStripSeparator());
+        }
+        Add("New tab", CommandCatalog.NewTab, () =>
+        {
+            NewTab();
+            FocusList();
+        });
+        Add("Reopen the closed tab", CommandCatalog.ReopenTab, ReopenClosedTab).Enabled = _tabs.HasClosed;
+        _tabMenu.Show(_tabStrip, location);
+
+        ToolStripMenuItem Add(string text, string? command, Action action)
+        {
+            var item = new ToolStripMenuItem(text) { ShortcutKeyDisplayString = command is null ? "" : Shortcut(command) ?? "" };
+            item.Click += (_, _) => action();
+            _tabMenu.Items.Add(item);
+            return item;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Loading
     // ------------------------------------------------------------------
 
     /// <summary>Navigation load: clears the list and streams the new folder in as it's enumerated.</summary>
     /// <param name="countVisit">Raise <see cref="Visited"/> once it has listed without error.</param>
-    private void LoadLocation(string location, string? selectName, bool countVisit = false)
+    /// <param name="restore">A tab being shown again: its saved selection and scroll position apply once listed.</param>
+    private void LoadLocation(string location, string? selectName, bool countVisit = false, TabState? restore = null)
     {
         StopWatcher();
         bool changed = !PathUtil.SameLocation(_location, location);
         _location = location;
         _pendingVisit = countVisit && !PathUtil.IsComputerRoot(location);
+        _restoring = restore;
         _all = [];
         _filter = "";
         _error = null;
         _loading = true;
         _autoSelect = true;
-        _autoTargetName = selectName;
+        _autoTargetName = restore?.Focus ?? selectName;
         _lastAutoIndex = -1;
         CancelReload();
 
         if (!_pathBox.Focused)
             _pathBox.Text = PathUtil.ToDisplay(location);
         UpdateNavButtons();
+        UpdateTabStrip();
         RebuildView(preserveScroll: false);
         StartLoader();
 
         if (changed)
             CurrentPathChanged?.Invoke(this, EventArgs.Empty);
+        TabsChanged?.Invoke(this);
+    }
+
+    /// <summary>The restoring tab's saved selection, once, if the user hasn't started moving around.</summary>
+    private SelectionSnapshot? TakeRestoreSelection()
+    {
+        var tab = _restoring;
+        _restoring = null;
+        if (tab is null || !_autoSelect || (tab.Selected.Count == 0 && !tab.SelectedAll && tab.Top is null))
+            return null;
+        var snapshot = new SelectionSnapshot { All = tab.SelectedAll, Focus = tab.Focus, Top = tab.Top };
+        snapshot.Names.UnionWith(tab.Selected);
+        return snapshot;
     }
 
     /// <summary>Reload: re-lists the current folder in the background and swaps it in when complete.</summary>
@@ -485,6 +757,7 @@ internal sealed class FilePane : UserControl
         if (error is not null)
         {
             _pendingVisit = false; // a folder that couldn't be listed (fully) isn't somewhere to come back to
+            _restoring = null;
             var message = DescribeLoadError(error, _location);
             if (_all.Count == 0 && _history.RevertFailed() is { } previous)
             {
@@ -493,12 +766,23 @@ internal sealed class FilePane : UserControl
                 ShowError(message);
                 return;
             }
+            if (_all.Count == 0 && error is DirectoryNotFoundException)
+            {
+                // Nowhere to go back to, as with a restored tab whose folder has since gone.
+                LeaveVanishedFolder();
+                return;
+            }
             _error = _all.Count == 0 ? message : $"Listing incomplete. {message}";
         }
         else if (completed)
         {
             StartWatcher();
             RaiseVisit();
+            if (TakeRestoreSelection() is { } restored)
+            {
+                RebuildView(preserveScroll: true, restored);
+                return;
+            }
         }
 
         RebuildView(preserveScroll: true);
@@ -523,7 +807,9 @@ internal sealed class FilePane : UserControl
             return;
 
         var buffer = _reloadBuffer ?? [];
-        var selection = _reloadSelection;
+        // Always consume a pending tab restore here, even when this reload brings its own selection.
+        var restored = TakeRestoreSelection();
+        var selection = _reloadSelection ?? (error is null ? restored : null);
         var after = _afterReload;
         CancelReload();
 
@@ -558,6 +844,7 @@ internal sealed class FilePane : UserControl
             ancestor = PathUtil.GetParent(ancestor);
         ancestor ??= PathUtil.ComputerRoot;
 
+        // Off the UI thread would be kinder to network paths, but this is rare: the folder is gone.
         _history.Push(ancestor);
         LoadLocation(ancestor, null);
         ShowError($"Folder no longer exists: {missing}");
@@ -939,6 +1226,11 @@ internal sealed class FilePane : UserControl
                 break;
             case MouseButtons.XButton2:
                 GoForward();
+                break;
+            case MouseButtons.Middle:
+                // Middle-click a folder: open it in a new tab, as in a browser.
+                if (_list.HitTest(e.Location).Item is { } hit && EntryAt(_view, hit.Index) is { IsContainer: true } entry)
+                    NewTab(PathUtil.Combine(_location, entry));
                 break;
             default:
                 _autoSelect = false;
@@ -1504,6 +1796,7 @@ internal sealed class FilePane : UserControl
             StopWatcher();
             _watchTimer.Dispose();
             _menu.Dispose();
+            _tabMenu.Dispose();
             _icons.Dispose();
             _toolTip.Dispose();
         }

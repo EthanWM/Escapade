@@ -40,13 +40,31 @@ public static class CommandCatalog
     public const string Redo = "edit.redo";
     public const string ToggleBookmark = "bookmarks.toggle";
     public const string OpenBookmarkPrefix = "bookmarks.open";
+    public const string NewTab = "tab.new";
+    public const string CloseTab = "tab.close";
+    public const string ReopenTab = "tab.reopen";
+    public const string NextTab = "tab.next";
+    public const string PreviousTab = "tab.previous";
+    public const string TabOverview = "tab.overview";
+    public const string SelectTabPrefix = "tab.select";
+    public const string MoveTabToOther = "tab.moveToOther";
+    public const string OpenInNewTab = "file.openInNewTab";
+    public const string SwitchWorkspace = "workspace.switch";
+    public const string NewWorkspace = "workspace.new";
+    public const string RenameWorkspace = "workspace.rename";
+    public const string DeleteWorkspace = "workspace.delete";
+    public const string RepoWorkspace = "workspace.forRepo";
     public const string EditKeybindings = "settings.keybindings";
     public const string EditBookmarks = "settings.bookmarks";
     public const string OpenSettingsFolder = "settings.folder";
 
     public const int BookmarkSlots = 9;
 
+    public const int TabSlots = 9;
+
     public static string OpenBookmark(int number) => OpenBookmarkPrefix + number;
+
+    public static string SelectTab(int number) => SelectTabPrefix + number;
 
     public static IReadOnlyList<CommandInfo> All { get; } = Build();
 
@@ -75,6 +93,7 @@ public static class CommandCatalog
             new(NewFolder, "New folder", L, "ctrl+shift+n"),
             new(SelectAll, "Select all", L, "ctrl+a"),
             new(Reveal, "Reveal in Explorer", L, "ctrl+shift+e"),
+            new(OpenInNewTab, "Open the folder in a new tab", L, "ctrl+enter"),
             new(WindowsMenu, "Show the Windows context menu", L),
             new(Undo, "Undo", L, "ctrl+z"),
             new(Redo, "Redo", L, "ctrl+y", "ctrl+shift+z"),
@@ -82,6 +101,20 @@ public static class CommandCatalog
         };
         for (int i = 1; i <= BookmarkSlots; i++)
             list.Add(new(OpenBookmark(i), $"Open bookmark {i}", A, $"alt+{i}"));
+        list.Add(new(NewTab, "New tab", A, "ctrl+t"));
+        list.Add(new(CloseTab, "Close tab", A, "ctrl+w"));
+        list.Add(new(ReopenTab, "Reopen the closed tab", A, "ctrl+shift+t"));
+        list.Add(new(NextTab, "Next tab", A, "ctrl+pagedown"));
+        list.Add(new(PreviousTab, "Previous tab", A, "ctrl+pageup"));
+        list.Add(new(TabOverview, "Show all tabs, in every workspace", A, "ctrl+tab", "ctrl+shift+tab"));
+        list.Add(new(MoveTabToOther, "Move the tab to the other pane", A));
+        for (int i = 1; i <= TabSlots; i++)
+            list.Add(new(SelectTab(i), $"Go to tab {i}", A, $"ctrl+{i}"));
+        list.Add(new(SwitchWorkspace, "Switch workspace…", A, "alt+w"));
+        list.Add(new(NewWorkspace, "New workspace…", A));
+        list.Add(new(RenameWorkspace, "Rename this workspace…", A));
+        list.Add(new(DeleteWorkspace, "Delete this workspace…", A));
+        list.Add(new(RepoWorkspace, "Open this git repo's workspace", A, "alt+shift+w"));
         list.Add(new(EditKeybindings, "Edit keybindings", A));
         list.Add(new(EditBookmarks, "Edit the bookmarks file", A));
         list.Add(new(OpenSettingsFolder, "Open the settings folder", A));

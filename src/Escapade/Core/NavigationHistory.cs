@@ -20,6 +20,29 @@ public sealed class NavigationHistory
     public bool CanGoForward => _index >= 0 && _index < _entries.Count - 1;
     public int Count => _entries.Count;
 
+    /// <summary>
+    /// The entries to save, at most <paramref name="max"/>, keeping the current one and favouring
+    /// what's behind it (Back) over what's ahead. Index is the current entry's position in them.
+    /// </summary>
+    public (List<HistoryEntry> Entries, int Index) Export(int max = 50)
+    {
+        if (_index < 0)
+            return ([], -1);
+        int forward = Math.Min(_entries.Count - 1 - _index, Math.Max(0, max / 5));
+        int start = Math.Max(0, _index - (max - 1 - forward));
+        int end = Math.Min(_entries.Count - 1, _index + forward);
+        return (_entries.GetRange(start, end - start + 1), _index - start);
+    }
+
+    /// <summary>Rebuilds a saved history. An empty list or an out-of-range index gives an empty history.</summary>
+    public static NavigationHistory Import(IEnumerable<HistoryEntry> entries, int index)
+    {
+        var history = new NavigationHistory();
+        history._entries.AddRange(entries);
+        history._index = history._entries.Count == 0 ? -1 : Math.Clamp(index, 0, history._entries.Count - 1);
+        return history;
+    }
+
     public HistoryEntry Push(string location)
     {
         if (_index < _entries.Count - 1)

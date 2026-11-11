@@ -1,8 +1,16 @@
 namespace Escapade.UI;
 
+/// <summary>Where a palette item should open: Enter, Ctrl+Enter or Shift+Enter.</summary>
+internal enum PaletteTarget
+{
+    Here,
+    OtherPane,
+    NewTab,
+}
+
 /// <summary>One row in the palette.</summary>
 /// <param name="TitleMarks">Character indexes in the title to highlight (what the query matched).</param>
-/// <param name="Run">Runs the item. The argument is true for Ctrl+Enter: "in the other pane".</param>
+/// <param name="Run">Runs the item, here or (Ctrl+Enter, Shift+Enter) in the other pane or a new tab.</param>
 /// <param name="Remove">Shift+Delete, for items that can be forgotten. Returns a message for the footer.</param>
 internal sealed record PaletteItem(
     string Title,
@@ -10,7 +18,7 @@ internal sealed record PaletteItem(
     string? Hint,
     int[] TitleMarks,
     int[] DetailMarks,
-    Action<bool> Run,
+    Action<PaletteTarget> Run,
     Func<string>? Remove = null);
 
 /// <summary>What the palette shows for a query, and a footer line with the keys that apply.</summary>
@@ -39,6 +47,7 @@ internal sealed class CommandPalette : Form
     private IReadOnlyList<PaletteItem> _items = [];
     private string? _footerNote;
     private bool _finished;
+    private bool _commitOnControlRelease;
 
     public CommandPalette(Form owner, Func<string, PaletteResults> source)
     {
@@ -53,6 +62,7 @@ internal sealed class CommandPalette : Form
         BackColor = SystemColors.ControlDark; // shows as a 1px border around _inner
         Padding = new Padding(1);
         Text = "Escapade palette";
+        KeyPreview = true; // to see Ctrl being released, for Ctrl+Tab
 
         _bold = new Font(Font, FontStyle.Bold);
         _inputFont = new Font(Font.FontFamily, Font.Size * 1.2f, Font.Style, Font.Unit);
@@ -108,7 +118,8 @@ internal sealed class CommandPalette : Form
             if (index >= 0)
             {
                 _list.SelectedIndex = index;
-                RunSelected(other: (ModifierKeys & Keys.Control) != 0);
+                RunSelected((ModifierKeys & Keys.Control) != 0 ? PaletteTarget.OtherPane
+                    : (ModifierKeys & Keys.Shift) != 0 ? PaletteTarget.NewTab : PaletteTarget.Here);
             }
         };
         // Clicks land on the list, but typing should always go to the search box.
@@ -124,8 +135,11 @@ internal sealed class CommandPalette : Form
     private int S(int logical) => _owner.LogicalToDeviceUnits(logical);
 
     /// <summary>Shows the palette centred near the top of the owner's client area, <paramref name="top"/> pixels down.</summary>
-    public void Open(string text, int top)
+    /// <param name="initialIndex">The row to start on (Ctrl+Tab starts on the second: the previous tab).</param>
+    /// <param name="commitOnControlRelease">Run the selected row when Ctrl is let go, for hold-Ctrl-and-tap-Tab switching.</param>
+    public void Open(string text, int top, int initialIndex = 0, bool commitOnControlRelease = false)
     {
+        _commitOnControlRelease = commitOnControlRelease;
         var client = _owner.RectangleToScreen(_owner.ClientRectangle);
         int width = Math.Max(S(320), Math.Min(S(720), client.Width - S(40)));
         Bounds = new Rectangle(client.Left + (client.Width - width) / 2, client.Top + top, width, Height);
@@ -133,6 +147,8 @@ internal sealed class CommandPalette : Form
         _input.Text = text;
         _input.SelectionStart = text.Length;
         Refill(keepIndex: false);
+        if (_items.Count > 0)
+            _list.SelectedIndex = Math.Clamp(initialIndex, 0, _items.Count - 1);
         Show(_owner);
         Activate();
         _input.Focus();
@@ -144,6 +160,20 @@ internal sealed class CommandPalette : Form
         _input.Text = text;
         _input.SelectionStart = text.Length;
         _input.Focus();
+    }
+
+    /// <summary>Asks the source again, keeping the selected row: for results that arrive later.</summary>
+    public void Requery()
+    {
+        if (!IsDisposed)
+            Refill(keepIndex: true);
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (_commitOnControlRelease && e.KeyCode == Keys.ControlKey)
+            RunSelected(PaletteTarget.Here);
     }
 
     private void Refill(bool keepIndex)
@@ -185,10 +215,19 @@ internal sealed class CommandPalette : Form
                 MoveSelection(-(MaxRows - 1));
                 return true;
             case Keys.Enter:
-                RunSelected(other: false);
+                RunSelected(PaletteTarget.Here);
                 return true;
             case Keys.Control | Keys.Enter:
-                RunSelected(other: true);
+                RunSelected(PaletteTarget.OtherPane);
+                return true;
+            case Keys.Shift | Keys.Enter:
+                RunSelected(PaletteTarget.NewTab);
+                return true;
+            case Keys.Control | Keys.Tab:
+                MoveSelection(1, wrap: true);
+                return true;
+            case Keys.Control | Keys.Shift | Keys.Tab:
+                MoveSelection(-1, wrap: true);
                 return true;
             case Keys.Escape:
                 _finished = true;
@@ -240,28 +279,42 @@ internal sealed class CommandPalette : Form
     private PaletteItem? Selected =>
         (uint)_list.SelectedIndex < (uint)_items.Count ? _items[_list.SelectedIndex] : null;
 
-    private void MoveSelection(int delta)
+    private void MoveSelection(int delta, bool wrap = false)
     {
-        if (_items.Count == 0)
+        int count = _items.Count;
+        if (count == 0)
             return;
-        _list.SelectedIndex = Math.Clamp(_list.SelectedIndex + delta, 0, _items.Count - 1);
+        int index = _list.SelectedIndex + delta;
+        _list.SelectedIndex = wrap ? ((index % count) + count) % count : Math.Clamp(index, 0, count - 1);
     }
 
-    private void RunSelected(bool other)
+    private void RunSelected(PaletteTarget target)
     {
-        if (Selected is not { } item)
+        if (_finished)
             return;
+        if (Selected is not { } item)
+        {
+            if (_commitOnControlRelease)
+            {
+                _finished = true;
+                Close();
+            }
+            return;
+        }
         _finished = true;
         Close();
         // After closing, so focus is back in the main window when the item runs.
-        _owner.BeginInvoke(() => item.Run(other));
+        _owner.BeginInvoke(() => item.Run(target));
     }
 
     private void RemoveSelected()
     {
         if (Selected?.Remove is not { } remove)
             return;
-        _footerNote = remove();
+        var note = remove();
+        if (IsDisposed || _finished)
+            return; // the removal closed the palette (it asked something in a dialog)
+        _footerNote = note.Length > 0 ? note : null;
         Refill(keepIndex: true);
     }
 

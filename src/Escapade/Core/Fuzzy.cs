@@ -21,9 +21,15 @@ public static class Fuzzy
     private const int NameExact = 10;
 
     /// <param name="nameStart">Where the name begins in <paramref name="text"/> (the last path segment); 0 for plain titles.</param>
-    public static FuzzyMatch? Match(string query, string text, int nameStart = 0)
+    public static FuzzyMatch? Match(string query, string text, int nameStart = 0) =>
+        Match(Words(query), text, nameStart);
+
+    /// <summary>The query's words, for matching many texts against one query without re-splitting it.</summary>
+    public static string[] Words(string query) =>
+        query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    public static FuzzyMatch? Match(string[] words, string text, int nameStart = 0)
     {
-        var words = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (words.Length == 0)
             return new FuzzyMatch(0, []);
 

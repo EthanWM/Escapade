@@ -112,6 +112,7 @@ internal static partial class NativeMethods
     internal const uint EM_SETSEL = 0x00B1;
     internal const uint LVM_SETITEMSTATE = LVM_FIRST + 43;
     internal const uint LVM_SETSELECTIONMARK = LVM_FIRST + 67;
+    internal const uint LVM_CANCELEDITLABEL = LVM_FIRST + 179;
 
     internal const int LVNI_FOCUSED = 0x0001;
     internal const uint LVIS_FOCUSED = 0x0001;
@@ -140,6 +141,13 @@ internal static partial class NativeMethods
 
     [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
     internal static partial nint SendMessage(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    internal const int ASFW_ANY = -1;
+
+    /// <summary>Lets the already-running instance bring its window to the front when handed a folder.</summary>
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AllowSetForegroundWindow(int processId);
 
     [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
     internal static partial nint SendMessage(nint hWnd, uint msg, nint wParam, ref LVITEMW lParam);
