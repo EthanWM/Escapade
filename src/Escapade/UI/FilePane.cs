@@ -24,8 +24,6 @@ internal sealed class FilePane : UserControl
     private const int WatchMaxDelayMs = 1500;
 
     private static readonly string[] ColumnNames = ["Name", "Date modified", "Type", "Size"];
-    private static readonly Color FilterBackColor = Color.FromArgb(255, 241, 178);
-    private static readonly Color ErrorColor = Color.Firebrick;
 
     private readonly Panel _activeStrip;
     private readonly Button _backButton;
@@ -115,6 +113,9 @@ internal sealed class FilePane : UserControl
         {
             Dock = DockStyle.Fill,
             Margin = new Padding(4, 3, 3, 3),
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Theme.Content,
+            ForeColor = Theme.Text,
             AutoCompleteMode = AutoCompleteMode.SuggestAppend,
             AutoCompleteSource = AutoCompleteSource.FileSystemDirectories,
         };
@@ -131,7 +132,8 @@ internal sealed class FilePane : UserControl
             ColumnCount = 4,
             RowCount = 1,
             Margin = Padding.Empty,
-            Padding = new Padding(2, 1, 2, 0),
+            Padding = new Padding(2, 2, 2, 2),
+            BackColor = Theme.Content, // continues the active tab down to the list, as in a browser
         };
         pathBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         pathBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -152,7 +154,11 @@ internal sealed class FilePane : UserControl
             SmallImageList = _icons.ImageList,
             LabelEdit = true, // edits only start via BeginRename; stray click-to-rename is cancelled
             ContextMenuStrip = _menu,
+            BackColor = Theme.Content,
+            ForeColor = Theme.Text,
         };
+        if (Theme.IsDark)
+            _list.UseThemedRows(); // so selected rows are the theme's orange, not the native theme's colour
         _list.Columns.Add(ColumnNames[0], 260);
         _list.Columns.Add(ColumnNames[1], 130);
         _list.Columns.Add(ColumnNames[2], 100);
@@ -174,8 +180,8 @@ internal sealed class FilePane : UserControl
             Anchor = AnchorStyles.Left,
             Margin = new Padding(2, 0, 6, 0),
             Padding = new Padding(4, 2, 4, 2),
-            BackColor = FilterBackColor,
-            ForeColor = Color.Black,
+            BackColor = Theme.FilterBack,
+            ForeColor = Theme.FilterText,
             Visible = false,
         };
         _statusLabel = new Label
@@ -193,29 +199,39 @@ internal sealed class FilePane : UserControl
             RowCount = 1,
             Margin = Padding.Empty,
             Padding = new Padding(2, 0, 2, 0),
+            BackColor = Theme.StatusBar,
         };
         statusBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         statusBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         statusBar.Controls.Add(_filterLabel, 0, 0);
         statusBar.Controls.Add(_statusLabel, 1, 0);
 
+        // Top to bottom: accent strip, tabs, path bar, divider, list, divider, status bar. The pane's
+        // own padding and back colour draw a 1px frame around it all (accented when active).
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 7,
             Margin = Padding.Empty,
+            BackColor = Theme.Surface, // explicit, or it would inherit the frame colour
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 3));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         layout.Controls.Add(_activeStrip, 0, 0);
         layout.Controls.Add(_tabStrip, 0, 1);
         layout.Controls.Add(pathBar, 0, 2);
-        layout.Controls.Add(_list, 0, 3);
-        layout.Controls.Add(statusBar, 0, 4);
+        layout.Controls.Add(Divider(), 0, 3);
+        layout.Controls.Add(_list, 0, 4);
+        layout.Controls.Add(Divider(), 0, 5);
+        layout.Controls.Add(statusBar, 0, 6);
+
+        Padding = new Padding(1);
 
         _watchTimer = new System.Windows.Forms.Timer();
         _watchTimer.Tick += (_, _) =>
@@ -1169,7 +1185,7 @@ internal sealed class FilePane : UserControl
         item.SubItems.Add(entry.TypeName);
         item.SubItems.Add(Format.Size(entry));
         if (entry.IsHidden)
-            item.ForeColor = SystemColors.GrayText;
+            item.ForeColor = Theme.DimText;
         e.Item = item;
     }
 
@@ -1750,12 +1766,12 @@ internal sealed class FilePane : UserControl
 
         if (_error is not null)
         {
-            _statusLabel.ForeColor = _messageIsInfo ? SystemColors.ControlText : ErrorColor;
+            _statusLabel.ForeColor = _messageIsInfo ? Theme.ChromeText : Theme.ErrorText;
             _statusLabel.Text = _error;
             return;
         }
 
-        _statusLabel.ForeColor = SystemColors.ControlText;
+        _statusLabel.ForeColor = Theme.ChromeText;
         bool narrowed = _view.Count != _all.Count;
         var text = narrowed
             ? $"{_view.Count:N0} of {_all.Count:N0} items"
@@ -1778,8 +1794,15 @@ internal sealed class FilePane : UserControl
         _upButton.Enabled = PathUtil.GetParent(_location) is not null;
     }
 
-    private void UpdateActiveStrip() =>
-        _activeStrip.BackColor = _isActive ? SystemColors.Highlight : SystemColors.Control;
+    /// <summary>The active pane gets an accent frame and a thicker accent edge along the top.</summary>
+    private void UpdateActiveStrip()
+    {
+        BackColor = _isActive ? Theme.ActiveFrame : Theme.Frame;
+        _activeStrip.BackColor = _isActive ? Theme.ActiveFrame : Theme.TabRow;
+    }
+
+    private static Panel Divider() =>
+        new() { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.Divider };
 
     private Button MakeNavButton(string text, string tip, EventHandler onClick)
     {
@@ -1792,6 +1815,12 @@ internal sealed class FilePane : UserControl
             TabStop = false,
         };
         button.FlatAppearance.BorderSize = 0;
+        if (Theme.IsDark)
+        {
+            button.ForeColor = Theme.ChromeText;
+            button.FlatAppearance.MouseOverBackColor = Theme.Hover;
+            button.FlatAppearance.MouseDownBackColor = Theme.SelectionBack;
+        }
         button.Click += onClick;
         button.Click += (_, _) => FocusList();
         _toolTip.SetToolTip(button, tip);

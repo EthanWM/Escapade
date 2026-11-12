@@ -48,6 +48,7 @@ internal sealed class CommandPalette : Form
     private string? _footerNote;
     private bool _finished;
     private bool _commitOnControlRelease;
+    private Color? _markColor; // matched letters' colour for the row being drawn, if not the row's own
 
     public CommandPalette(Form owner, Func<string, PaletteResults> source)
     {
@@ -59,7 +60,7 @@ internal sealed class CommandPalette : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         Font = owner.Font;
-        BackColor = SystemColors.ControlDark; // shows as a 1px border around _inner
+        BackColor = Theme.Frame; // shows as a 1px border around _inner
         Padding = new Padding(1);
         Text = "Escapade palette";
         KeyPreview = true; // to see Ctrl being released, for Ctrl+Tab
@@ -70,7 +71,7 @@ internal sealed class CommandPalette : Form
         _inner = new Panel
         {
             Dock = DockStyle.Fill,
-            BackColor = SystemColors.Window,
+            BackColor = Theme.Content,
             Padding = new Padding(S(6)),
         };
         _input = new TextBox
@@ -78,6 +79,8 @@ internal sealed class CommandPalette : Form
             Dock = DockStyle.Top,
             Font = _inputFont,
             BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Theme.Content,
+            ForeColor = Theme.Text,
         };
         _gap = new Panel { Dock = DockStyle.Top, Height = S(4) };
         _list = new ListBox
@@ -88,6 +91,8 @@ internal sealed class CommandPalette : Form
             IntegralHeight = false,
             TabStop = false,
             ItemHeight = Math.Min(255, Font.Height + S(10)),
+            BackColor = Theme.Content,
+            ForeColor = Theme.Text,
         };
         _footer = new Label
         {
@@ -95,7 +100,7 @@ internal sealed class CommandPalette : Form
             AutoSize = false,
             Height = Font.Height + S(8),
             TextAlign = ContentAlignment.BottomLeft,
-            ForeColor = SystemColors.GrayText,
+            ForeColor = Theme.DimText,
             AutoEllipsis = true,
         };
 
@@ -328,9 +333,11 @@ internal sealed class CommandPalette : Form
             return;
         var item = _items[e.Index];
         bool selected = (e.State & DrawItemState.Selected) != 0;
-        var fore = selected ? SystemColors.HighlightText : SystemColors.WindowText;
-        var dim = selected ? SystemColors.HighlightText : SystemColors.GrayText;
-        using (var back = new SolidBrush(selected ? SystemColors.Highlight : SystemColors.Window))
+        var fore = selected ? Theme.SelectionText : Theme.Text;
+        var dim = selected ? Theme.SelectionText : Theme.DimText;
+        // Dark scheme: matched letters in orange too, on rows that aren't already highlighted.
+        _markColor = Theme.IsDark && !selected ? Theme.Accent : (Color?)null;
+        using (var back = new SolidBrush(selected ? Theme.SelectionBack : Theme.Content))
             e.Graphics.FillRectangle(back, e.Bounds);
 
         int pad = S(8);
@@ -364,14 +371,15 @@ internal sealed class CommandPalette : Form
 
             var run = text[start..end];
             var font = bold ? _bold : Font;
+            var runColor = bold && _markColor is { } mark ? mark : color;
             int width = TextRenderer.MeasureText(g, run, font, Size.Empty, TextFlags).Width;
             if (x + width > right)
             {
                 TextRenderer.DrawText(g, text[start..], font, new Rectangle(x, bounds.Top, right - x, bounds.Height),
-                    color, TextFlags | TextFormatFlags.EndEllipsis);
+                    runColor, TextFlags | TextFormatFlags.EndEllipsis);
                 return right;
             }
-            TextRenderer.DrawText(g, run, font, new Rectangle(x, bounds.Top, width, bounds.Height), color, TextFlags);
+            TextRenderer.DrawText(g, run, font, new Rectangle(x, bounds.Top, width, bounds.Height), runColor, TextFlags);
             x += width;
             start = end;
         }

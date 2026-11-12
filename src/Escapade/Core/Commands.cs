@@ -58,6 +58,9 @@ public static class CommandCatalog
     public const string EditKeybindings = "settings.keybindings";
     public const string EditBookmarks = "settings.bookmarks";
     public const string OpenSettingsFolder = "settings.folder";
+    public const string ThemeSystem = "view.themeSystem";
+    public const string ThemeLight = "view.themeLight";
+    public const string ThemeDark = "view.themeDark";
 
     public const int BookmarkSlots = 9;
 
@@ -120,6 +123,9 @@ public static class CommandCatalog
         list.Add(new(EditKeybindings, "Edit keybindings", A));
         list.Add(new(EditBookmarks, "Edit the bookmarks file", A));
         list.Add(new(OpenSettingsFolder, "Open the settings folder", A));
+        list.Add(new(ThemeSystem, "Theme: follow Windows", A));
+        list.Add(new(ThemeLight, "Theme: light", A));
+        list.Add(new(ThemeDark, "Theme: dark", A));
         return list;
     }
 }

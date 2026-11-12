@@ -142,6 +142,12 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
     internal static partial nint SendMessage(nint hWnd, uint msg, nint wParam, nint lParam);
 
+    internal const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+    /// <summary>Window attributes drawn by the desktop window manager, such as a dark title bar.</summary>
+    [LibraryImport("dwmapi.dll")]
+    internal static partial int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
+
     internal const int ASFW_ANY = -1;
 
     /// <summary>Lets the already-running instance bring its window to the front when handed a folder.</summary>

@@ -21,10 +21,12 @@ internal sealed class TextPrompt : Form
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(380, 130);
         Padding = new Padding(12);
+        BackColor = Theme.Surface;
+        ForeColor = Theme.Text;
 
         var caption = new Label { Text = label, AutoSize = true, Location = new Point(12, 12) };
-        _input = new TextBox { Text = initial, Location = new Point(12, 34), Width = 356, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-        _problem = new Label { AutoSize = true, Location = new Point(12, 62), ForeColor = Color.Firebrick };
+        _input = new TextBox { BackColor = Theme.Content, ForeColor = Theme.Text, Text = initial, Location = new Point(12, 34), Width = 356, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
+        _problem = new Label { AutoSize = true, Location = new Point(12, 62), ForeColor = Theme.ErrorText };
         var ok = new Button { Text = "OK", DialogResult = DialogResult.None, Location = new Point(212, 92), Width = 75 };
         var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(293, 92), Width = 75 };
         ok.Click += (_, _) =>
@@ -44,6 +46,12 @@ internal sealed class TextPrompt : Form
     }
 
     private string Value => _input.Text.Trim();
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.ApplyTitleBar(this);
+    }
 
     /// <summary>Asks for a name. Returns it trimmed, or null if cancelled.</summary>
     public static string? Ask(IWin32Window owner, string title, string label, string initial, Func<string, string?> validate)

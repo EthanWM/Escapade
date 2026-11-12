@@ -37,6 +37,81 @@ internal sealed class FileListView : ListView
         base.WndProc(ref m);
     }
 
+    /// <summary>
+    /// Draws the rows here instead of leaving it to the native control, so selected rows can be
+    /// the theme's colour (the dark scheme's orange); the native dark theme picks its own. Column
+    /// headers stay native. Used in dark mode only; light mode keeps the standard Windows look.
+    /// </summary>
+    public void UseThemedRows()
+    {
+        OwnerDraw = true;
+        DrawColumnHeader += (_, e) => e.DrawDefault = true;
+        DrawItem += (_, _) => { }; // each cell, including its background, is drawn in DrawSubItem
+        DrawSubItem += OnDrawSubItem;
+    }
+
+    private const TextFormatFlags CellFlags =
+        TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis
+        | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
+
+    private void OnDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    {
+        if (e.Item is not { } item || e.SubItem is not { } cell)
+            return;
+        var g = e.Graphics;
+        var bounds = e.Bounds;
+        bool selected = item.Selected;
+        var back = selected ? (Focused ? Theme.SelectionBack : Theme.InactiveSelectionBack) : BackColor;
+        using (var brush = new SolidBrush(back))
+            g.FillRectangle(brush, bounds);
+
+        int pad = LogicalToDeviceUnits(6);
+        Rectangle textRect;
+        if (e.ColumnIndex == 0)
+        {
+            int x = bounds.X + pad / 2;
+            if (SmallImageList is { } images && (uint)item.ImageIndex < (uint)images.Images.Count)
+            {
+                var size = images.ImageSize;
+                images.Draw(g, x, bounds.Y + (bounds.Height - size.Height) / 2, item.ImageIndex);
+                x += size.Width + pad / 2;
+            }
+            textRect = Rectangle.FromLTRB(x, bounds.Y, bounds.Right - pad / 2, bounds.Bottom);
+
+            // The keyboard focus, when the list has it: an orange bar at the row's left edge.
+            if (item.Focused && Focused)
+            {
+                using var bar = new SolidBrush(Theme.Accent);
+                g.FillRectangle(bar, bounds.X, bounds.Y, Math.Max(2, LogicalToDeviceUnits(2)), bounds.Height);
+            }
+        }
+        else
+        {
+            textRect = Rectangle.FromLTRB(bounds.X + pad, bounds.Y, bounds.Right - pad, bounds.Bottom);
+        }
+
+        var flags = CellFlags;
+        if (Columns[e.ColumnIndex].TextAlign == HorizontalAlignment.Right)
+            flags |= TextFormatFlags.Right;
+        var color = selected ? Theme.SelectionText : item.ForeColor.IsEmpty ? ForeColor : item.ForeColor;
+        TextRenderer.DrawText(g, cell.Text, Font, textRect, color, flags);
+    }
+
+    // Selected rows are drawn quieter without focus, so repaint when focus comes and goes.
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        if (OwnerDraw)
+            Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        if (OwnerDraw)
+            Invalidate();
+    }
+
     public int FocusedIndex =>
         IsHandleCreated ? (int)SendMessage(Handle, LVM_GETNEXTITEM, -1, LVNI_FOCUSED) : -1;
 

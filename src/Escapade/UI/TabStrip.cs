@@ -127,8 +127,8 @@ internal sealed class TabStrip : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(SystemColors.Control);
-        using var line = new Pen(SystemColors.ControlDark);
+        g.Clear(Theme.TabRow);
+        using var line = new Pen(Theme.Divider);
         g.DrawLine(line, 0, Height - 1, Width, Height - 1);
 
         for (int i = 0; i < _rects.Count; i++)
@@ -137,18 +137,18 @@ internal sealed class TabStrip : Control
             bool active = i == _active;
             if (active)
             {
-                using var back = new SolidBrush(SystemColors.Window);
+                using var back = new SolidBrush(Theme.Content);
                 g.FillRectangle(back, r.X, r.Y, r.Width, r.Height);
                 g.DrawLine(line, r.Left, r.Top, r.Left, r.Bottom);
                 g.DrawLine(line, r.Right - 1, r.Top, r.Right - 1, r.Bottom);
-                using var accent = new SolidBrush(_paneActive ? SystemColors.Highlight : SystemColors.ControlDark);
+                using var accent = new SolidBrush(_paneActive ? Theme.Accent : Theme.Frame);
                 g.FillRectangle(accent, r.X, r.Y, r.Width, S(2));
             }
             else
             {
                 if (i == _hover)
                 {
-                    using var hover = new SolidBrush(SystemColors.ControlLight);
+                    using var hover = new SolidBrush(Theme.Hover);
                     g.FillRectangle(hover, r);
                 }
                 if (i + 1 != _active && i + 1 < _rects.Count)
@@ -157,22 +157,22 @@ internal sealed class TabStrip : Control
 
             int textRight = ShowsClose(i) ? CloseRect(i).Left - S(2) : r.Right - S(8);
             var textRect = Rectangle.FromLTRB(r.Left + S(10), r.Top, textRight, r.Bottom);
-            TextRenderer.DrawText(g, _tabs[i].Text, Font, textRect, active ? SystemColors.WindowText : SystemColors.ControlText, TextFlags);
+            TextRenderer.DrawText(g, _tabs[i].Text, Font, textRect, active ? Theme.Text : Theme.ChromeText, TextFlags);
 
             if (ShowsClose(i))
             {
                 var c = CloseRect(i);
                 if (i == _hover && _hoverClose)
                 {
-                    using var hot = new SolidBrush(SystemColors.ControlDark);
+                    using var hot = new SolidBrush(Theme.Frame);
                     g.FillRectangle(hot, c);
                 }
-                TextRenderer.DrawText(g, "×", Font, c, SystemColors.ControlText,
+                TextRenderer.DrawText(g, "×", Font, c, Theme.ChromeText,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             }
         }
 
-        TextRenderer.DrawText(g, "+", Font, _plusRect, SystemColors.ControlText,
+        TextRenderer.DrawText(g, "+", Font, _plusRect, Theme.ChromeText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 

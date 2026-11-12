@@ -26,6 +26,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripDropDownButton _bookmarksButton;
     private readonly ToolStripButton _commandsButton;
     private readonly ToolStrip _rail;
+    private readonly Panel _railLine;
     private readonly List<Image> _railImages = [];
     private readonly SplitContainer _split;
     private readonly FilePane _left;
@@ -36,6 +37,7 @@ internal sealed class MainForm : Form
     private readonly Dictionary<string, Action> _commands;
     private readonly Dictionary<string, CommandInfo> _commandInfo;
     private readonly Session _session;
+    private AppSettings _settings;
     private readonly bool _firstRun;
     private readonly string? _sessionProblem;
     private readonly System.Windows.Forms.Timer _sessionTimer = new() { Interval = SessionSaveDelayMs };
@@ -69,12 +71,14 @@ internal sealed class MainForm : Form
                 BuildRail(); // the rail's first button shows where the hidden pane is
         };
 
+        // The panes sit as framed cards on a darker gutter, which also forms the splitter between
+        // them. Its widths are set in UpdateGutter, in device pixels.
         _split = new SplitContainer
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterWidth = 5,
             TabStop = false,
+            BackColor = Theme.Gutter,
         };
         _split.Panel1.Controls.Add(_left);
         _split.Panel2.Controls.Add(_right);
@@ -110,7 +114,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Top,
             GripStyle = ToolStripGripStyle.Hidden,
-            RenderMode = ToolStripRenderMode.System,
+            RenderMode = Theme.ToolStripMode,
             CanOverflow = false,
             Padding = new Padding(4, 1, 4, 1),
         };
@@ -127,11 +131,13 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Left,
             LayoutStyle = ToolStripLayoutStyle.VerticalStackWithOverflow,
             GripStyle = ToolStripGripStyle.Hidden,
-            RenderMode = ToolStripRenderMode.System,
+            RenderMode = Theme.ToolStripMode,
             Padding = new Padding(2, 4, 2, 4),
             Visible = false,
         };
         _rail.ImageScalingSize = SystemInformation.SmallIconSize;
+        _railLine = new Panel { Dock = DockStyle.Left, Width = 1, BackColor = Theme.Divider, Visible = false };
+        var toolbarLine = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Theme.Divider };
 
         _history.Changed += UpdateHistoryButtons;
 
@@ -145,6 +151,7 @@ internal sealed class MainForm : Form
         };
         _data.Problem += message => _active.ShowError(message);
         _data.Notice += message => _active.ShowInfo(message);
+        _settings = AppSettings.Load(_data.Folder);
 
         // The session decides what the panes show. A first run starts from the arguments, or home.
         var (session, problem) = _data.LoadSession();
@@ -162,10 +169,15 @@ internal sealed class MainForm : Form
         ClientSize = new Size(1280, 720);
         StartPosition = _session.Window is null ? FormStartPosition.WindowsDefaultLocation : FormStartPosition.Manual;
         Text = "Escapade";
-        // Docking runs in reverse z-order: the toolbar claims the full top edge, then the rail
-        // the left edge below it, and the panes fill what's left.
+        BackColor = Theme.Surface;
+        ForeColor = Theme.ChromeText;
+        // Docking runs in reverse z-order: the toolbar claims the full top edge with its line under
+        // it, then the rail the left edge below them with its line beside it, and the panes fill
+        // what's left.
         Controls.Add(_split);
+        Controls.Add(_railLine);
         Controls.Add(_rail);
+        Controls.Add(toolbarLine);
         Controls.Add(_toolbar);
         UpdateShortcutHints();
         ResumeLayout(false);
@@ -207,9 +219,77 @@ internal sealed class MainForm : Form
         return pane;
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.ApplyTitleBar(this);
+    }
+
+    // ------------------------------------------------------------------
+    // Theme: chosen at start-up (WinForms can't switch colour mode once windows exist)
+    // ------------------------------------------------------------------
+
+    private static ThemeChoice? ThemeOf(string commandId) => commandId switch
+    {
+        C.ThemeSystem => ThemeChoice.System,
+        C.ThemeLight => ThemeChoice.Light,
+        C.ThemeDark => ThemeChoice.Dark,
+        _ => null,
+    };
+
+    private static string Describe(ThemeChoice choice) => choice switch
+    {
+        ThemeChoice.Light => "the light theme",
+        ThemeChoice.Dark => "the dark theme",
+        _ => "following Windows",
+    };
+
+    /// <summary>Saves the theme choice and, if it changes what's on screen, offers to restart into it.</summary>
+    private void SetTheme(ThemeChoice choice)
+    {
+        if (choice == _settings.ThemeChoice)
+        {
+            _active.ShowInfo($"Escapade is already {Describe(choice)}.");
+            return;
+        }
+        try
+        {
+            _settings = _settings.WithTheme(choice);
+            _settings.Save(_data.Folder);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _active.ShowError($"Couldn't save the theme: {ex.Message}");
+            return;
+        }
+
+        // Following Windows may already look like the theme in use, in which case nothing changes.
+        bool willBeDark = choice == ThemeChoice.Dark
+            || (choice == ThemeChoice.System && Application.SystemColorMode == SystemColorMode.Dark);
+        if (willBeDark == Theme.IsDark)
+        {
+            _active.ShowInfo($"Escapade is now {Describe(choice)}.");
+            return;
+        }
+
+        var answer = MessageBox.Show(this,
+            $"Escapade needs to restart to switch to {(willBeDark ? "the dark" : "the light")} theme. Restart now? Your tabs and workspaces come back as they are.",
+            "Escapade", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (answer == DialogResult.Yes)
+        {
+            Program.RestartRequested = true;
+            Close();
+        }
+        else
+        {
+            _active.ShowInfo("The new theme applies the next time Escapade starts.");
+        }
+    }
+
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
+        UpdateGutter();
         RestoreWindow();
         _split.SplitterDistance = _split.Width / 2;
 
@@ -308,6 +388,9 @@ internal sealed class MainForm : Form
                 if (_data.OpenFolder() is { } error)
                     _active.ShowError(error);
             },
+            [C.ThemeSystem] = () => SetTheme(ThemeChoice.System),
+            [C.ThemeLight] = () => SetTheme(ThemeChoice.Light),
+            [C.ThemeDark] = () => SetTheme(ThemeChoice.Dark),
         };
         for (int i = 1; i <= C.BookmarkSlots; i++)
         {
@@ -915,6 +998,8 @@ internal sealed class MainForm : Form
             return $"Rename the workspace “{_session.Current.Name}”…";
         if (info.Id is C.DeleteWorkspace)
             return _session.Workspaces.Count > 1 ? $"Delete the workspace “{_session.Current.Name}”…" : null;
+        if (ThemeOf(info.Id) is { } theme && theme == _settings.ThemeChoice)
+            return $"{info.Title}  (current)";
         return info.Title;
     }
 
@@ -1418,6 +1503,8 @@ internal sealed class MainForm : Form
             BuildRail();
             _split.Panel1Collapsed = true;
             _rail.Visible = true;
+            _railLine.Visible = true;
+            UpdateGutter();
             SetActive(_right);
             if (focus)
                 _right.FocusList();
@@ -1425,13 +1512,33 @@ internal sealed class MainForm : Form
         else
         {
             _rail.Visible = false;
+            _railLine.Visible = false;
             _split.Panel1Collapsed = false;
+            UpdateGutter();
             if (_savedSplitterDistance > 0)
                 SetSplitterDistance(_savedSplitterDistance);
             if (focus)
                 _left.FocusList();
         }
         UpdatePaneToggle();
+    }
+
+    /// <summary>
+    /// The gutter around and between the panes, in this monitor's pixels. With the left pane
+    /// hidden, the right pane gets the gutter on its left too, against the rail.
+    /// </summary>
+    private void UpdateGutter()
+    {
+        int g = LogicalToDeviceUnits(Theme.GutterWidth);
+        _split.SplitterWidth = g;
+        _split.Panel1.Padding = new Padding(g, g, 0, g);
+        _split.Panel2.Padding = LeftCollapsed ? new Padding(g) : new Padding(0, g, g, g);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        UpdateGutter();
     }
 
     private void SetSplitterDistance(int distance)
