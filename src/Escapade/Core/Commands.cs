@@ -49,6 +49,7 @@ public static class CommandCatalog
     public const string SelectTabPrefix = "tab.select";
     public const string MoveTabToOther = "tab.moveToOther";
     public const string OpenInNewTab = "file.openInNewTab";
+    public const string ImportExplorerTabs = "tab.importExplorer";
     public const string SwitchWorkspace = "workspace.switch";
     public const string NewWorkspace = "workspace.new";
     public const string RenameWorkspace = "workspace.rename";
@@ -101,6 +102,7 @@ public static class CommandCatalog
         };
         for (int i = 1; i <= BookmarkSlots; i++)
             list.Add(new(OpenBookmark(i), $"Open bookmark {i}", A, $"alt+{i}"));
+        list.Add(new(ImportExplorerTabs, "Import open Explorer folders as tabs", A));
         list.Add(new(NewTab, "New tab", A, "ctrl+t"));
         list.Add(new(CloseTab, "Close tab", A, "ctrl+w"));
         list.Add(new(ReopenTab, "Reopen the closed tab", A, "ctrl+shift+t"));

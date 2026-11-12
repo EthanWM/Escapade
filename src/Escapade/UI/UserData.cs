@@ -5,9 +5,9 @@ using Escapade.Core;
 namespace Escapade.UI;
 
 /// <summary>
-/// The user's files in %APPDATA%\Escapade: keybindings.json and bookmarks.json (hand-editable,
-/// reloaded as soon as they're saved) and history.json (folder visits for Ctrl+P, saved a few
-/// seconds after changing and on exit). UI thread only.
+/// The user's files in %APPDATA%\Escapade: the default profile's keybindings.json and bookmarks.json
+/// (hand-editable, reloaded as soon as they're saved) and history.json (folder visits for Ctrl+P,
+/// saved a few seconds after changing and on exit). UI thread only.
 /// </summary>
 internal sealed class UserData : IDisposable
 {
@@ -19,6 +19,7 @@ internal sealed class UserData : IDisposable
     private const int HistorySaveDelayMs = 5000;
 
     private readonly string _folder;
+    private readonly ProfileStore _profiles;
     private readonly System.Windows.Forms.Timer _reloadTimer = new() { Interval = ReloadDelayMs };
     private readonly System.Windows.Forms.Timer _historyTimer = new() { Interval = HistorySaveDelayMs };
     private FileSystemWatcher? _watcher;
@@ -33,6 +34,7 @@ internal sealed class UserData : IDisposable
     public UserData(string? folder = null)
     {
         _folder = folder ?? SettingsFile.DefaultFolder;
+        _profiles = new ProfileStore(_folder);
         Keymap = Keymap.Defaults(CommandCatalog.All);
         _reloadTimer.Tick += (_, _) =>
         {
@@ -69,6 +71,8 @@ internal sealed class UserData : IDisposable
     /// <summary>Reads everything and starts watching for edits. Problems are reported through <see cref="Problem"/>.</summary>
     public void Load(ISynchronizeInvoke ui)
     {
+        if (_profiles.Initialize() is { } profileProblem)
+            Problem?.Invoke(profileProblem);
         LoadKeymap();
         LoadBookmarks();
         LoadHistory();
@@ -81,7 +85,7 @@ internal sealed class UserData : IDisposable
 
     private void LoadKeymap(bool reloading = false)
     {
-        var text = SettingsFile.ReadText(PathOf(KeybindingsName));
+        var text = SettingsFile.ReadText(_profiles.KeybindingsPath);
         _keymapText = text;
         var (map, problems) = Keymap.Build(CommandCatalog.All, text);
         if (map is not null)
@@ -103,7 +107,7 @@ internal sealed class UserData : IDisposable
     /// <summary>Opens keybindings.json in the user's editor, first writing one listing every default if there's none.</summary>
     public void EditKeybindings(IWin32Window owner)
     {
-        var path = PathOf(KeybindingsName);
+        var path = _profiles.KeybindingsPath;
         if (TryCreate(path, () => Keymap.Template(CommandCatalog.All), ref _keymapText, owner))
             OpenInEditor(path, owner);
     }
@@ -315,7 +319,7 @@ internal sealed class UserData : IDisposable
             Directory.CreateDirectory(_folder);
             var watcher = new FileSystemWatcher(_folder, "*.json")
             {
-                IncludeSubdirectories = false,
+                IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
                 SynchronizingObject = ui, // raise events on the UI thread
             };
@@ -345,7 +349,7 @@ internal sealed class UserData : IDisposable
     {
         try
         {
-            if (SettingsFile.ReadText(PathOf(KeybindingsName)) != _keymapText)
+            if (SettingsFile.ReadText(_profiles.KeybindingsPath) != _keymapText)
                 LoadKeymap(reloading: true);
             if (SettingsFile.ReadText(PathOf(BookmarksName)) != _bookmarksText)
                 LoadBookmarks();

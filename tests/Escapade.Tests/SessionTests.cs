@@ -18,6 +18,17 @@ public class PaneTabsTests
     }
 
     [Fact]
+    public void Add_range_keeps_input_order_and_activates_the_last_tab()
+    {
+        var pane = new PaneTabs([new(@"C:\a"), new(@"C:\b"), new(@"C:\c")], 1);
+
+        Assert.Equal(2, pane.AddRange([@"C:\x", @"C:\y"]));
+
+        Assert.Equal([@"C:\a", @"C:\b", @"C:\x", @"C:\y", @"C:\c"], Locations(pane));
+        Assert.Equal(@"C:\y", pane.Active.Location);
+    }
+
+    [Fact]
     public void The_last_tab_cant_be_closed()
     {
         var pane = new PaneTabs(@"C:\a");

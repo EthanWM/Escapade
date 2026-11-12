@@ -72,6 +72,18 @@ public sealed class PaneTabs
 
     public TabState Add(string location) => Add(new TabState(location));
 
+    /// <summary>Adds tabs after the active one in input order and activates the last added tab.</summary>
+    public int AddRange(IEnumerable<string> locations)
+    {
+        int added = 0;
+        foreach (var location in locations)
+        {
+            Add(location);
+            added++;
+        }
+        return added;
+    }
+
     /// <summary>
     /// Closes a tab, remembering it for <see cref="ReopenClosed"/>. The last tab can't be closed:
     /// returns null. Closing the active tab activates its right-hand neighbour (else the left).

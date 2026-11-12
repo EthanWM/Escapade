@@ -494,6 +494,17 @@ internal sealed class FilePane : UserControl
         ShowActiveTab(countVisit: location is not null);
     }
 
+    public int ImportTabs(IReadOnlyList<string> locations)
+    {
+        if (locations.Count == 0)
+            return 0;
+        EndRename();
+        CaptureActiveTab();
+        int imported = _tabs.AddRange(locations);
+        ShowActiveTab(countVisit: true);
+        return imported;
+    }
+
     /// <summary>Ctrl+Enter or middle-click: the focused folder in a new tab.</summary>
     public void OpenFocusedInNewTab()
     {

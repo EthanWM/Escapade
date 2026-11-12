@@ -22,13 +22,14 @@ The central problem it solves is losing track of where things are, not raw speed
 - **Duplicate detection.** Navigating to a folder already open in another tab jumps to that tab instead of opening a duplicate.
 - **Go-to-anything (`Ctrl+P`).** Searches across open tabs, bookmarks and frecency-ranked history (scored by how often and how recently you visit, like zoxide). Covers both "where did I have that open" and "take me to the folder I always use."
 - **Tab overview (`Ctrl+Tab`).** Every tab in every workspace as one filterable list.
+- **Import Explorer folders.** The command opens filesystem folders exposed by Windows Shell as tabs in the active pane; background Explorer tabs not exposed as separate Shell windows may be omitted.
 
 ### Too mouse-heavy
 
 - **Commander-style keys:** `Tab` switches panes, `F5` copies to the other pane, `F6` moves, `F2` renames, `Ctrl+Shift+N` creates a folder.
 - **Type-to-filter.** Typing in a pane narrows the list immediately. `Esc` clears it.
 - **Command palette (`Ctrl+Shift+P`).** Every action with its shortcut shown, so bindings are learned through use.
-- **Keybindings in a config file** that hot-reloads, so anything can be remapped without rebuilding.
+- **Named JSON-backed configuration profiles.** The default user profile stores keybindings separately from bookmarks, history and session data; keybindings hot-reload. Profile switching, workspace associations and a settings editor are later work.
 
 ### Moving files between places
 
@@ -62,7 +63,7 @@ Each phase produces something usable. The hard COM/shell work comes last, by whi
 |---|---|---|
 | 0.1 | Browse fast | Single pane, background enumeration, keyboard navigation, path bar, open files via `ShellExecute`, type-to-filter |
 | 0.2 | Daily-drivable | Dual pane, `F5`/`F6` operations via `IFileOperation`, rename, delete to Recycle Bin, Reveal in Explorer |
-| 0.3 | Keyboard-first | Command palette, go-to-folder with frecency, bookmarks, keybinding config |
+| 0.3 | Keyboard-first | Command palette, go-to-folder with frecency, bookmarks, default-profile keybinding config |
 | 0.4 | The core idea | Workspaces, session restore, duplicate detection, tab overview, search across open tabs |
 | 0.5 | Dev features | Git status, gitignore hiding, open-in actions, copy-path variants |
 | Later | Shell integration | Native context menu, drag and drop with other apps, preview pane, shelf |

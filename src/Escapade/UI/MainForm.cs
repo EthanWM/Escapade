@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Escapade.Core;
 using Vanara.Windows.Shell;
 using C = Escapade.Core.CommandCatalog;
@@ -283,6 +284,7 @@ internal sealed class MainForm : Form
             [C.Undo] = () => StepHistory(1, undo: true),
             [C.Redo] = () => StepHistory(1, undo: false),
             [C.ToggleBookmark] = ToggleBookmark,
+            [C.ImportExplorerTabs] = ImportExplorerFolders,
             [C.NewTab] = () =>
             {
                 _active.NewTab();
@@ -323,6 +325,47 @@ internal sealed class MainForm : Form
         if (missing.Count > 0)
             throw new InvalidOperationException($"No handler for: {string.Join(", ", missing)}");
         return commands;
+    }
+
+    private void ImportExplorerFolders()
+    {
+        ExplorerFolderResult result;
+        try
+        {
+            result = ExplorerWindows.ReadOpenFolders();
+        }
+        catch (COMException ex)
+        {
+            _active.ShowError($"Couldn't read open File Explorer folders: {ex.Message}");
+            return;
+        }
+        catch (InvalidOperationException ex)
+        {
+            _active.ShowError(ex.Message);
+            return;
+        }
+
+        if (result.Locations.Count == 0)
+        {
+            if (result.UnreadableWindows == 0)
+                _active.ShowInfo("No open File Explorer folders were found.");
+            else
+                _active.ShowError($"No folders were imported; {result.UnreadableWindows} open window(s) couldn't be read.");
+            return;
+        }
+
+        int imported = _active.ImportTabs(result.Locations);
+        _active.FocusList();
+        string message = $"Imported {imported} Explorer folder(s) as tabs.";
+        if (result.UnreadableWindows > 0)
+        {
+            message += $" {result.UnreadableWindows} open window(s) couldn't be read.";
+            _active.ShowError(message);
+        }
+        else
+        {
+            _active.ShowInfo(message);
+        }
     }
 
     /// <summary>The single place keys become commands, using the (user-configurable) keymap.</summary>
